@@ -56,18 +56,18 @@
 <body>
 <main>
   <h1>Photo Drop</h1>
-  <p class="sub">Send photos from this device straight to the PC.</p>
+  <p class="sub">Send photos from this device directly to the PC.</p>
 
   <div class="card">
     <label for="set">Photo set name</label>
-    <input id="set" type="text" autocomplete="off" autocapitalize="off" placeholder="e.g. clip-scan-1">
-    <div class="hint">Each set gets its own folder on the PC. Use a new name for each object you scan.</div>
+    <input id="set" type="text" autocomplete="off" autocapitalize="off" placeholder="Example: clip-scan-1">
+    <div class="hint">The PC makes a folder for each set. Use a new name for each object that you scan.</div>
   </div>
 
   <div class="card">
-    <label class="pick" id="pickLabel" for="files">Choose photos</label>
+    <label class="pick" id="pickLabel" for="files">Select photos</label>
     <input id="files" type="file" multiple accept="image/*,video/*">
-    <div class="hint">Re-sending the same photo is harmless: duplicates are skipped.</div>
+    <div class="hint">You can send a photo again without risk. The PC does not save duplicates.</div>
   </div>
 
   <div class="card" id="progressCard" hidden>
@@ -97,28 +97,28 @@ try { setInput.value = localStorage.getItem("photoDropSet") || ""; } catch (e) {
 setInput.addEventListener("input", () => { try { localStorage.setItem("photoDropSet", setInput.value); } catch (e) {} });
 
 fetch("/info?t=" + encodeURIComponent(token)).then(r => r.json()).then(info => {
-  if (info.dest) document.getElementById("dest").textContent = "Saving to " + info.dest;
+  if (info.dest) document.getElementById("dest").textContent = "Save folder: " + info.dest;
 }).catch(() => {});
 
 function render() {
   document.getElementById("nSaved").textContent = counts.saved + " saved";
   document.getElementById("nDup").textContent = counts.duplicate + " duplicate" + (counts.duplicate === 1 ? "" : "s");
   document.getElementById("nFail").textContent = counts.failed + " failed";
-  document.getElementById("nLeft").textContent = pending ? pending + " to go" : "Done";
+  document.getElementById("nLeft").textContent = pending ? pending + " remaining" : "Completed";
   let live = 0; inFlight.forEach(v => live += v);
   document.getElementById("bar").style.width = totalBytes ? Math.min(100, (doneBytes + live) / totalBytes * 100) + "%" : "0";
   pickLabel.setAttribute("aria-disabled", pending ? "true" : "false");
-  pickLabel.textContent = pending ? "Uploading…" : "Choose photos";
+  pickLabel.textContent = pending ? "Upload in progress…" : "Select photos";
 }
 
-// Photos up to this size are read fully into memory before sending. On iOS this forces the
-// photo to be materialized, which avoids Safari occasionally sending an empty body.
+// Read photos up to this size fully into memory before the upload. On iOS, this makes the
+// photo available as a real file. Thus, Safari does not send an empty body.
 const PRELOAD_LIMIT = 256 * 1024 * 1024;
 
 function uploadOne(file, setName) {
   return new Promise(async resolve => {
     const row = document.createElement("li");
-    row.innerHTML = '<span class="n"></span><span class="s">reading</span>';
+    row.innerHTML = '<span class="n"></span><span class="s">wait</span>';
     row.querySelector(".n").textContent = file.name;
     list.prepend(row);
     const status = row.querySelector(".s");
@@ -157,12 +157,12 @@ function uploadOne(file, setName) {
       let r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
       if (xhr.status === 200 && r.status === "saved") finish("saved", "saved");
       else if (xhr.status === 200 && r.status === "duplicate") finish("duplicate", r.of ? "duplicate of " + r.of : "duplicate");
-      else finish("failed", r.error || ("error " + xhr.status));
+      else finish("failed", r.error || ("Error " + xhr.status));
     };
-    xhr.onerror = () => finish("failed", "network error");
+    xhr.onerror = () => finish("failed", "Network error");
 
     if (size === 0) {
-      finish("failed", "couldn't read photo, try again");
+      finish("failed", "Cannot read the photo. Try again.");
       return;
     }
     status.textContent = "0%";
@@ -183,7 +183,7 @@ filesInput.addEventListener("change", async () => {
   totalBytes += files.reduce((a, f) => a + f.size, 0);
   render();
 
-  // Two uploads at a time keeps Wi-Fi busy without overwhelming the phone
+  // Do two uploads at the same time. This keeps the Wi-Fi network busy but does not overload the phone.
   const queue = files.slice();
   const worker = async () => { while (queue.length) await uploadOne(queue.shift(), setName); };
   await Promise.all([worker(), worker()]);

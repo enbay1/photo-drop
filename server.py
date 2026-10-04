@@ -1,12 +1,14 @@
 """
-Photo Drop: a tiny LAN upload server for getting phone photos onto this PC.
+Photo Drop: a small LAN upload server. It sends photos from a phone to this PC.
 
-Run:  python server.py [--dest FOLDER] [--port 8765]
-Then scan the QR code it opens on the PC with your phone (same Wi-Fi).
+To start:  python server.py [--dest FOLDER] [--port 8765]
+The server opens a QR code page on the PC. Scan the QR code with the phone.
+The phone and the PC must be on the same Wi-Fi network.
 
-Each upload "set" lands in its own subfolder of --dest. Files with identical
-content to one already in that set are skipped, so re-uploading is harmless.
-Standard library only.
+The server saves each upload "set" in a different subfolder of --dest. If a file
+has the same content as a file in the set, the server does not save it. Thus,
+you can upload a file again without risk.
+The server uses only the standard library.
 """
 import argparse
 import hashlib
@@ -24,16 +26,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
-MAX_FILE_BYTES = 4 * 1024 ** 3  # 4 GB per file (videos are fine too)
+MAX_FILE_BYTES = 4 * 1024 ** 3  # Maximum of 4 GB for each file (also for videos)
 CHUNK = 1024 * 1024
 SAFE_CHARS = re.compile(r"[^A-Za-z0-9._ ()\-]+")
 
 _hashLock = threading.Lock()
-_hashIndex = {}  # set folder -> {sha256 hex digest: path of the file with that content}
+_hashIndex = {}  # Set folder -> {SHA-256 hex digest: path of the file with this content}
 
 
 def safeName(name, fallback):
-    """Reduce a client-supplied name to a safe single path component."""
+    """Change a name from the client to one safe path component."""
     name = os.path.basename(name.replace("\\", "/")).strip()
     name = SAFE_CHARS.sub("_", name).strip(" .")
     return name[:120] or fallback
@@ -48,17 +50,17 @@ def fileHash(path):
 
 
 def knownHashes(setDir):
-    """Map of content hash -> path for files already in a set folder, computed once and cached."""
+    """Return a map of content hash -> path for the files in a set folder. Calculate the map one time and keep it."""
     key = str(setDir)
     if key not in _hashIndex:
-        # Skip in-progress uploads (including the one being checked right now)
+        # Ignore uploads that are not complete. This includes the upload that the server checks now.
         _hashIndex[key] = {fileHash(p): p for p in setDir.iterdir()
                            if p.is_file() and not p.name.startswith(".upload-")} if setDir.exists() else {}
     return _hashIndex[key]
 
 
 def isDuplicate(hashes, digest):
-    """True if a file with this content is still on disk; forgets entries for files deleted since."""
+    """Return True if a file with this content is on the disk. Remove the entries for files that were deleted."""
     existing = hashes.get(digest)
     if existing is None:
         return False
@@ -69,7 +71,7 @@ def isDuplicate(hashes, digest):
 
 
 def uniquePath(folder, name):
-    """Return folder/name, adding ' (2)', ' (3)'... if that name is taken by different content."""
+    """Return folder/name. If a different file uses this name, add ' (2)', ' (3)', and so on."""
     candidate = folder / name
     stem, suffix = candidate.stem, candidate.suffix
     i = 2
@@ -80,7 +82,7 @@ def uniquePath(folder, name):
 
 
 def loadToken(tokenFile):
-    """Read the access token from tokenFile, creating a random one on first run."""
+    """Read the access token from tokenFile. If there is no token, make a random token and save it."""
     if tokenFile.exists():
         token = tokenFile.read_text(encoding="utf-8").strip()
         if token:
@@ -91,7 +93,7 @@ def loadToken(tokenFile):
 
 
 def lanAddress():
-    """Best guess at this PC's LAN IP (no packets are actually sent)."""
+    """Return the most probable LAN IP address of this PC. This function does not send packets."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("10.255.255.255", 1))
@@ -106,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "PhotoDrop/1.0"
 
     def log_message(self, fmt, *args):
-        pass  # keep the console for upload lines only
+        pass  # Show only upload messages in the console
 
     def sendJson(self, code, payload):
         body = json.dumps(payload).encode()
@@ -135,10 +137,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         query = parse_qs(url.query)
-        # The QR page reveals the token, so only this PC may load it
+        # The QR page shows the token. Thus, send it only to this PC.
         if url.path in ("/qr", "/qrinfo", "/qrcode.min.js"):
             if not self.isLocal():
-                self.send_error(403, "The QR page is only available on the PC running Photo Drop.")
+                self.send_error(403, "The QR page is available only on the PC that runs Photo Drop.")
             elif url.path == "/qr":
                 self.sendFile("qr.html", "text/html; charset=utf-8")
             elif url.path == "/qrcode.min.js":
@@ -148,7 +150,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path == "/":
             if not self.authorized(query):
-                self.send_error(403, "Missing or wrong token. Use the full link printed by the server.")
+                self.send_error(403, "The token is missing or not correct. Use the full link that the server shows.")
                 return
             page = (HERE / "index.html").read_bytes()
             self.send_response(200)
@@ -180,15 +182,15 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             length = -1
         if length < 0 or length > MAX_FILE_BYTES:
-            self.sendJson(411 if length < 0 else 413, {"error": "bad or missing Content-Length"})
+            self.sendJson(411 if length < 0 else 413, {"error": "The Content-Length header is missing or not correct."})
             return
         if length == 0:
-            # iOS occasionally hands the browser an empty file; never store those
-            self.sendJson(400, {"error": "empty file received, try again"})
+            # Sometimes iOS gives an empty file to the browser. Do not save empty files.
+            self.sendJson(400, {"error": "The file is empty. Send the file again."})
             return
         expected = self.headers.get("X-File-Size")
         if expected and expected.isdigit() and int(expected) != length:
-            self.sendJson(400, {"error": f"incomplete upload ({length} of {expected} bytes), try again"})
+            self.sendJson(400, {"error": f"The upload is not complete ({length} of {expected} bytes). Send the file again."})
             return
 
         setName = safeName(query.get("set", [""])[0], "untitled")
@@ -196,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         setDir = self.server.dest / setName
         setDir.mkdir(parents=True, exist_ok=True)
 
-        # Stream the body to a temp file in the same folder, hashing as we go
+        # Write the body to a temporary file in the same folder. Calculate the hash at the same time.
         h = hashlib.sha256()
         remaining = length
         fd, tmpName = tempfile.mkstemp(dir=setDir, prefix=".upload-", suffix=".part")
@@ -205,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                 while remaining > 0:
                     block = self.rfile.read(min(CHUNK, remaining))
                     if not block:
-                        raise ConnectionError("client disconnected")
+                        raise ConnectionError("The client disconnected.")
                     out.write(block)
                     h.update(block)
                     remaining -= len(block)
@@ -215,14 +217,14 @@ class Handler(BaseHTTPRequestHandler):
                 hashes = knownHashes(setDir)
                 if isDuplicate(hashes, digest):
                     os.remove(tmpName)
-                    print(f"  skip  {setName}/{fileName} (duplicate of {hashes[digest].name})")
+                    print(f"  skip  {setName}/{fileName} (same content as {hashes[digest].name})")
                     self.sendJson(200, {"status": "duplicate", "name": fileName, "of": hashes[digest].name})
                     return
                 final = uniquePath(setDir, fileName)
                 os.replace(tmpName, final)
                 hashes[digest] = final
 
-            # Keep the photo's original timestamp when the browser provides it
+            # If the browser sends the original timestamp of the photo, keep it
             lastModified = self.headers.get("X-Last-Modified")
             if lastModified and lastModified.isdigit():
                 ts = int(lastModified) / 1000
@@ -242,12 +244,12 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description="LAN photo upload server")
-    parser.add_argument("--dest", default=str(HERE / "uploads"), help="folder where photo sets are saved")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--token", default=None, help="access token (default: read from --token-file)")
+    parser.add_argument("--dest", default=str(HERE / "uploads"), help="the folder for the photo sets")
+    parser.add_argument("--port", type=int, default=8765, help="the port for the server")
+    parser.add_argument("--token", default=None, help="the access token (default: the token in --token-file)")
     parser.add_argument("--token-file", default=str(HERE / ".photodrop-token"),
-                        help="file holding the access token; created with a random token if missing")
-    parser.add_argument("--no-browser", action="store_true", help="don't open the QR code page on startup")
+                        help="the file that contains the access token. If the file does not exist, the server makes it with a random token.")
+    parser.add_argument("--no-browser", action="store_true", help="do not open the QR code page when the server starts")
     args = parser.parse_args()
 
     dest = Path(args.dest).expanduser().resolve()
@@ -260,11 +262,11 @@ def main():
     url = f"http://{lanAddress()}:{args.port}/?t={server.token}"
     server.url = url
     qrPage = f"http://127.0.0.1:{args.port}/qr"
-    print("Photo Drop is running.")
-    print(f"  Open on your phone (same Wi-Fi): {url}")
-    print(f"  QR code to scan: {qrPage}")
-    print(f"  Saving to: {dest}")
-    print("  Press Ctrl+C to stop.\n", flush=True)
+    print("Photo Drop started.")
+    print(f"  Link for the phone (same Wi-Fi network): {url}")
+    print(f"  QR code page: {qrPage}")
+    print(f"  Save folder: {dest}")
+    print("  To stop the server, push Ctrl+C.\n", flush=True)
     if not args.no_browser:
         webbrowser.open(qrPage)
     try:
