@@ -111,22 +111,38 @@ function render() {
   pickLabel.textContent = pending ? "Uploading…" : "Choose photos";
 }
 
+// Photos up to this size are read fully into memory before sending. On iOS this forces the
+// photo to be materialized, which avoids Safari occasionally sending an empty body.
+const PRELOAD_LIMIT = 256 * 1024 * 1024;
+
 function uploadOne(file, setName) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     const row = document.createElement("li");
-    row.innerHTML = '<span class="n"></span><span class="s">waiting</span>';
+    row.innerHTML = '<span class="n"></span><span class="s">reading</span>';
     row.querySelector(".n").textContent = file.name;
     list.prepend(row);
     const status = row.querySelector(".s");
+
+    let body = file;
+    let size = file.size;
+    if (size <= PRELOAD_LIMIT) {
+      try {
+        body = await file.arrayBuffer();
+        size = body.byteLength;
+      } catch (e) {
+        size = 0;
+      }
+    }
 
     const xhr = new XMLHttpRequest();
     const q = "set=" + encodeURIComponent(setName) + "&name=" + encodeURIComponent(file.name);
     xhr.open("POST", "/upload?" + q);
     xhr.setRequestHeader("X-Token", token);
     xhr.setRequestHeader("X-Last-Modified", String(file.lastModified || ""));
+    xhr.setRequestHeader("X-File-Size", String(size));
     xhr.upload.onprogress = e => {
       inFlight.set(file, e.loaded);
-      status.textContent = Math.round(e.loaded / file.size * 100) + "%";
+      status.textContent = Math.round(e.loaded / Math.max(size, 1) * 100) + "%";
       render();
     };
     const finish = (kind, text) => {
@@ -140,11 +156,17 @@ function uploadOne(file, setName) {
     xhr.onload = () => {
       let r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
       if (xhr.status === 200 && r.status === "saved") finish("saved", "saved");
-      else if (xhr.status === 200 && r.status === "duplicate") finish("duplicate", "duplicate");
+      else if (xhr.status === 200 && r.status === "duplicate") finish("duplicate", r.of ? "duplicate of " + r.of : "duplicate");
       else finish("failed", r.error || ("error " + xhr.status));
     };
     xhr.onerror = () => finish("failed", "network error");
-    xhr.send(file);
+
+    if (size === 0) {
+      finish("failed", "couldn't read photo, try again");
+      return;
+    }
+    status.textContent = "0%";
+    xhr.send(body);
   });
 }
 

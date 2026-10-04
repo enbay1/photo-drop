@@ -29,7 +29,7 @@ CHUNK = 1024 * 1024
 SAFE_CHARS = re.compile(r"[^A-Za-z0-9._ ()\-]+")
 
 _hashLock = threading.Lock()
-_hashIndex = {}  # set folder -> set of sha256 hex digests already present
+_hashIndex = {}  # set folder -> {sha256 hex digest: path of the file with that content}
 
 
 def safeName(name, fallback):
@@ -48,13 +48,24 @@ def fileHash(path):
 
 
 def knownHashes(setDir):
-    """Hashes of files already in a set folder, computed once and cached."""
+    """Map of content hash -> path for files already in a set folder, computed once and cached."""
     key = str(setDir)
     if key not in _hashIndex:
         # Skip in-progress uploads (including the one being checked right now)
-        _hashIndex[key] = {fileHash(p) for p in setDir.iterdir()
-                           if p.is_file() and not p.name.startswith(".upload-")} if setDir.exists() else set()
+        _hashIndex[key] = {fileHash(p): p for p in setDir.iterdir()
+                           if p.is_file() and not p.name.startswith(".upload-")} if setDir.exists() else {}
     return _hashIndex[key]
+
+
+def isDuplicate(hashes, digest):
+    """True if a file with this content is still on disk; forgets entries for files deleted since."""
+    existing = hashes.get(digest)
+    if existing is None:
+        return False
+    if existing.is_file():
+        return True
+    del hashes[digest]
+    return False
 
 
 def uniquePath(folder, name):
@@ -171,6 +182,14 @@ class Handler(BaseHTTPRequestHandler):
         if length < 0 or length > MAX_FILE_BYTES:
             self.sendJson(411 if length < 0 else 413, {"error": "bad or missing Content-Length"})
             return
+        if length == 0:
+            # iOS occasionally hands the browser an empty file; never store those
+            self.sendJson(400, {"error": "empty file received, try again"})
+            return
+        expected = self.headers.get("X-File-Size")
+        if expected and expected.isdigit() and int(expected) != length:
+            self.sendJson(400, {"error": f"incomplete upload ({length} of {expected} bytes), try again"})
+            return
 
         setName = safeName(query.get("set", [""])[0], "untitled")
         fileName = safeName(query.get("name", [""])[0], "photo.jpg")
@@ -194,14 +213,14 @@ class Handler(BaseHTTPRequestHandler):
 
             with _hashLock:
                 hashes = knownHashes(setDir)
-                if digest in hashes:
+                if isDuplicate(hashes, digest):
                     os.remove(tmpName)
-                    print(f"  skip  {setName}/{fileName} (duplicate)")
-                    self.sendJson(200, {"status": "duplicate", "name": fileName})
+                    print(f"  skip  {setName}/{fileName} (duplicate of {hashes[digest].name})")
+                    self.sendJson(200, {"status": "duplicate", "name": fileName, "of": hashes[digest].name})
                     return
                 final = uniquePath(setDir, fileName)
                 os.replace(tmpName, final)
-                hashes.add(digest)
+                hashes[digest] = final
 
             # Keep the photo's original timestamp when the browser provides it
             lastModified = self.headers.get("X-Last-Modified")
