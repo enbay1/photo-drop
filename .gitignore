@@ -1,0 +1,9 @@
+﻿# Uploaded photos
+uploads/
+
+# Secret access token (generated on first run)
+.photodrop-token
+
+# Python
+__pycache__/
+*.pyc
